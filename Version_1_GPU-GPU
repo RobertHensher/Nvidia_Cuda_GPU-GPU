@@ -1,0 +1,96 @@
+#include <stdio.h>
+#include <fstream>
+#include <iostream>
+#include <time.h>
+#include <cuda_runtime.h>
+
+using namespace std;
+
+const int DATA_SET_SIZE = 100000; // is set to 100,000 indicating the size of the dataset
+const int MOVES = 3; //Moves is set to 3, meaning there are three possible moves ( 0, 1, 2).
+const int PERMUTATIONS = MOVES * MOVES; //total number of move pairs, calculated as MOVES * MOVES (which is 9)
+int NAB[PERMUTATIONS]; //an array that will store the counts of each pair of moves
+int dataSet[DATA_SET_SIZE]; //  array to hold the dataset of moves
+
+__global__ void PopulateNABKernel(int* dataSet, int* NAB, int dataSize) // CUDA kernel function, runs on the GPU
+{
+    int index = threadIdx.x + blockIdx.x * blockDim.x;
+    if (index < dataSize - 1) 
+    {
+        int firstMove = dataSet[index];
+        int secondMove = dataSet[index + 1];
+        int permIndex = firstMove * MOVES + secondMove;
+        atomicAdd(&NAB[permIndex], 1); // safely increment the count in NAB to avoid race conditions
+    }
+}
+
+void GenerateData() //generates random moves (0, 1, or 2) and writes them to a binary file
+{
+    ofstream out("data.dat", ios::out | ios::binary);
+    for (int n = 0; n < DATA_SET_SIZE; n++) 
+    {
+        int i = rand() % MOVES;
+        out.write((char*)&i, sizeof(i));
+    }
+    out.close();
+}
+
+void InitialiseNAB() //This function initializes the NAB array to zero
+{
+    for (int n = 0; n < PERMUTATIONS; n++) 
+    {
+        NAB[n] = 0;
+    }
+}
+
+void GetData() //This function reads the dataset from the binary file data.dat into the dataSet array
+{
+    ifstream in("data.dat", ios::in | ios::binary);
+    for (int n = 0; n < DATA_SET_SIZE; n++) 
+    {
+        in.read((char*)&dataSet[n], sizeof(int));
+    }
+    in.close();
+}
+
+void DisplayNAB() //prints the count of each move pair from the NAB array and checks that the total count matches the expected number of pairs 
+{
+    int check = 0;
+    cout << endl;
+    for (int n = 0; n < PERMUTATIONS; n++) 
+    {
+        cout << "Index " << n << " : " << NAB[n] << endl;
+        check += NAB[n];
+    }
+    cout << "Total : " << check << endl;
+}
+
+int main() //Seeds the random number generator
+{
+    srand(time(NULL));
+    GenerateData();
+    GetData();
+    InitialiseNAB();
+
+    int* d_dataSet, * d_NAB;
+
+    cudaMalloc((void**)&d_dataSet, DATA_SET_SIZE * sizeof(int));
+    cudaMalloc((void**)&d_NAB, PERMUTATIONS * sizeof(int));
+
+    cudaMemcpy(d_dataSet, dataSet, DATA_SET_SIZE * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_NAB, NAB, PERMUTATIONS * sizeof(int), cudaMemcpyHostToDevice);
+
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (DATA_SET_SIZE + threadsPerBlock - 1) / threadsPerBlock;
+
+    PopulateNABKernel << <blocksPerGrid, threadsPerBlock >> > (d_dataSet, d_NAB, DATA_SET_SIZE);
+
+    cudaMemcpy(NAB, d_NAB, PERMUTATIONS * sizeof(int), cudaMemcpyDeviceToHost);
+
+    DisplayNAB();
+
+    cudaFree(d_dataSet);
+    cudaFree(d_NAB);
+
+    return 0;
+}
